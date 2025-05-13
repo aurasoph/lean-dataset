@@ -1,0 +1,7 @@
+[project]
+name = "lean-dataset"
+version = "0.0.1"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pantograph = {git = "https://github.com/stanford-centaur/PyPantograph.git", rev = "657799dc8c4e81cbb8efaab93e0d656962b65dee"}
