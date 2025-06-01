@@ -2,6 +2,34 @@ from lean_interact import LeanREPLConfig, TempRequireProject, LeanRequire, LeanS
 from openai import OpenAI
 import re
 
+MINIF2F_INIT_STR = """import Mathlib
+import Aesop
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat"""
+
+class Chat:
+    def __init__(self, system_prompt, model):
+        with open("/Users/xvade/dev/LEAN/lean-dataset/lean-dataset/Model Testing/OPEN_AI_API_KEY.txt", 'r') as f:
+            api_key = f.read()
+        self.model = model
+        self.client = OpenAI(api_key=api_key)
+        self.messages = [{"role": "system", "content": system_prompt}]
+        self.api_calls_made = 0
+    
+    def get_response(self, input):
+        self.messages.append({"role": "user", "content": input})
+        completion = self.client.chat.completions.create(
+            model=self.model,
+            messages=self.messages,
+        )
+        self.api_calls_made += 1
+        self.messages.append(completion.choices[0].message)
+        return completion.choices[0].message.content
+        
+
+
 
 def generate_one_example(lines):
     return "example " + ''.join(['(' + i + ') ' for i in lines[:-1]]) + ':' + lines[-1][1:] + " := by"
@@ -23,8 +51,16 @@ def generate_examples(interact_messages):
 def get_info_view(interact_messages):
     return '\n\n'.join([goal for goals in (message.data for message in interact_messages) for goal in goals])
 
+def clean_response(response):
+    while "```lean" in response:
+        response = response.split("```lean", 1)[1].strip()
+    while "```" in response:
+        response = response.split("```", 1)[0]
+    return response
+
+
 def get_ai_response(example):
-    with open("OPEN_AI_API_KEY.txt", 'r') as f:
+    with open("/Users/xvade/dev/LEAN/lean-dataset/lean-dataset/Model Testing/OPEN_AI_API_KEY.txt", 'r') as f:
         api_key = f.read()
     client = OpenAI(api_key=api_key)
 
@@ -38,16 +74,15 @@ def get_ai_response(example):
 
     res_text = response.output_text
 
-    if res_text.startswith("```lean\n"):
-        res_text = res_text[8:]
-    
-    if res_text.endswith("```"):
-        res_text = res_text[:-3]
-
-    return res_text
+    return clean_response(res_text)
 
 def solve_example(statement):
-    imports = "import Mathlib"
+    imports = """import Mathlib
+import Aesop
+
+set_option maxHeartbeats 0
+
+open BigOperators Real Nat Topology Rat"""
     config = LeanREPLConfig(
         lean_version="v4.19.0",
         project=TempRequireProject([
@@ -74,9 +109,49 @@ def solve_example(statement):
             break
     return lines
 
-        
+
+
+def persevere(prompt, lean_init_str="", chat=Chat(), allowed_attempts=10, print_progress=False):
+    config = LeanREPLConfig(
+        lean_version="v4.19.0",
+        project=TempRequireProject([
+            LeanRequire(
+                name="mathlib",
+                git="https://github.com/leanprover-community/mathlib4.git",
+                rev="v4.19.0"
+            )
+        ])
+    )
+
+    server = LeanServer(config)
+    
+
+    response = clean_response(chat.get_response(lean_init_str + "\n" + prompt))
+    if print_progress:
+        print("=====ATTEMPT 1======")
+        print(response)
+    # messages = server.run(Command(cmd=lean_init_str + "\n" + prompt + "\n" + response)).messages
+    messages = server.run(Command(cmd=response)).messages
+    # print(lean_init_str + "\n" + prompt + "\n" + response)
+    for i in range(allowed_attempts - 1):
+        if len(messages) == 1 and messages[0].data == "Goals accomplished!":
+            print("SUCCEEDED in " + str(i + 1) + " attempt(s).")
+            return response
+        reply = "There were some issues with that proof. You must change the following lines to resolve these issues\n\n" + "\n\n".join(["Line " + str(message.end_pos.line) + ": " + message.data for message in messages])
+        if print_progress:
+            print(reply)
+        response = clean_response(chat.get_response(reply))
+        if print_progress:
+            print("=====ATTEMPT " + str(i + 2) + "=====")
+            print(response)
+        # messages = server.run(Command(cmd=lean_init_str + "\n" + prompt + "\n" + response)).messages
+        messages = server.run(Command(cmd=response)).messages
+    if print_progress:
+        print("FAILED in " + str(allowed_attempts) + " attempt(s).")
+
 
 if __name__ == "__main__":
-    print(solve_example("""example (a b : ℝ) : a^3 - b^3 = (a-b)*(a^2+a*b+b^2) := by"""))
-
+    # print(solve_example("""theorem mathd_numbertheory_35 (S : Finset ℕ) (h₀ : ∀ n : ℕ, n ∣ Nat.sqrt 196) : (∑ k in S, k) = 24 := by"""))
+    chat = Chat("You are given a LEAN 4 example statement or theorem and you solve it. You produce LEAN 4 code. You rewrite the imports and the theorem or example statement exactly as they were given at the beginning of your proof. You do NOT import anything new. You may use natural language to think through your method. If your code doesn't work you will be given all of the messages from the LEAN 4 compiler. You will rewrite the given lines to avoid those issues.", "gpt-4o")
+    persevere("""theorem mathd_algebra_22a : Real.logb (5 ^ 2) (5 ^ 4) = 2 := by""", MINIF2F_INIT_STR, chat=chat, allowed_attempts=5, print_progress=True)
     
