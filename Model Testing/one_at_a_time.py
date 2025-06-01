@@ -110,7 +110,12 @@ open BigOperators Real Nat Topology Rat"""
     return lines
 
 
-
+"""
+Makes a given model try the same problem `allowed_attempts` times, or until it gets it right. Provides
+the model with the InfoView feedback from each of its attempts. To run with a non-GPT model, create a
+wrapper class for your model that supports a `get_response` method, context window should be preserved
+between calls to `get_response`.
+"""
 def persevere(prompt, lean_init_str="", chat=Chat(), allowed_attempts=10, print_progress=False):
     config = LeanREPLConfig(
         lean_version="v4.19.0",
