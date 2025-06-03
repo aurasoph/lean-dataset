@@ -1,6 +1,10 @@
 from lean_interact import LeanREPLConfig, TempRequireProject, LeanRequire, LeanServer, FileCommand, Command
 from openai import OpenAI
-import re, time
+import re, time, os, json
+from pathlib import Path
+from tqdm import tqdm
+import random
+import amath
 
 MINIF2F_INIT_STR = """import Mathlib
 import Aesop
@@ -62,7 +66,7 @@ def get_info_view(interact_messages):
     return '\n\n'.join([goal for goals in (message.data for message in interact_messages) for goal in goals])
 
 def generate_reply(messages):
-    return "There were some issues with that proof. You must change the following lines to resolve these issues\n\n" + "\n\n".join(["Line " + str(message.end_pos.line) + ": " + message.data for message in messages])
+    return "There were some issues with that proof. You must change the following lines to resolve these issues\n\n" + "\n\n".join(["Line " + str(message.end_pos.line) + ": " + message.data if message.end_pos is not None else message.data for message in messages])
 
 def clean_response(response):
     while "```lean" in response:
@@ -129,21 +133,27 @@ the model with the InfoView feedback from each of its attempts. To run with a no
 wrapper class for your model that supports a `get_response` method, context window should be preserved
 between calls to `get_response`.
 """
-def persevere(prompt, lean_init_str="", chat=Chat("You are a helpful chat assistant.", "gpt-4o"), server = LeanServer(LEAN_CONFIG), allowed_attempts=10, print_progress=False):
+def persevere(prompt, lean_init_str="", chat=Chat("You are a helpful chat assistant.", "gpt-4o"), server = LeanServer(LEAN_CONFIG), allowed_attempts=10, run_with_server=False, print_progress=False):
     start = time.time()
-    response = clean_response(chat.get_response(lean_init_str + "\n" + prompt))
+    prompts = [lean_init_str + "\n" + prompt]
+    response = clean_response(chat.get_response(prompts[0]))
+    responses = [response]
+
     if print_progress:
         print("=====ATTEMPT 1======")
         print(response)
     # messages = server.run(Command(cmd=lean_init_str + "\n" + prompt + "\n" + response)).messages
-    messages = server.run(Command(cmd=response)).messages
+    if run_with_server:
+        reply = amath.offload_to_laptop(response).message
+    else:
+        reply = generate_reply(server.run(Command(cmd=response)).messages)
     # print(lean_init_str + "\n" + prompt + "\n" + response)
     for i in range(allowed_attempts - 1):
-        if len(messages) == 1 and messages[0].data == "Goals accomplished!":
-            print("SUCCEEDED in " + str(i + 1) + " attempt(s).")
-            print("SUCCEEDED after " + str(time.time() - start) + " seconds.")
-            return response
-        reply = generate_reply(messages)
+        if reply == "":
+            if print_progress:
+                print("SUCCEEDED in " + str(i + 1) + " attempt(s).")
+                print("SUCCEEDED after " + str(time.time() - start) + " seconds.")
+            return {"prompts" : prompts, "responses" : responses, "success" : 1}
         if print_progress:
             print(reply)
         response = clean_response(chat.get_response(reply))
@@ -151,14 +161,45 @@ def persevere(prompt, lean_init_str="", chat=Chat("You are a helpful chat assist
             print("=====ATTEMPT " + str(i + 2) + "=====")
             print(response)
         # messages = server.run(Command(cmd=lean_init_str + "\n" + prompt + "\n" + response)).messages
-        messages = server.run(Command(cmd=response)).messages
+        if run_with_server:
+            reply = amath.offload_to_laptop(response).message
+        else:
+            reply = generate_reply(server.run(Command(cmd=response)).messages)
     if print_progress:
         print("FAILED in " + str(allowed_attempts) + " attempt(s).")
         print("FAILED after " + str(time.time() - start) + " seconds.")
 
+    return {"prompts" : prompts, "responses" : responses, "success" : 0}
+
 
 if __name__ == "__main__":
-    # print(solve_example("""theorem mathd_numbertheory_35 (S : Finset ℕ) (h₀ : ∀ n : ℕ, n ∣ Nat.sqrt 196) : (∑ k in S, k) = 24 := by"""))
-    chat = Chat("You are given a LEAN 4 example statement or theorem and you solve it. You produce LEAN 4 code. You rewrite the imports and the theorem or example statement exactly as they were given at the beginning of your proof. You do NOT import anything new. You may use natural language to think through your method. If your code doesn't work you will be given all of the messages from the LEAN 4 compiler. You will rewrite the given lines to avoid those issues.", "gpt-4o")
-    persevere("""theorem mathd_algebra_22a : Real.logb (5 ^ 2) (5 ^ 4) = 2 := by""", MINIF2F_INIT_STR, chat=chat, allowed_attempts=5, print_progress=True)
-    
+    results_file = "path/path/path"
+    results = {}
+    lean_server = LeanServer(LEAN_CONFIG)
+
+    if os.path.exists(results_file):
+        with open(results_file, "r") as f:
+            try:
+                results = json.load(f)
+            except json.JSONDecodeError:
+                print("Warning: corrupted JSON, starting fresh.")
+
+    with open("path/to/prompts", 'r') as f:
+        prompts = json.load(f)
+    for prompt_obj in tqdm(prompts):
+        prompt = prompt_obj["prompt"]
+        if not lean_server.is_alive():
+            lean_server = LeanServer(LEAN_CONFIG)
+        chat = Chat("You are given a LEAN 4 example statement or theorem and you solve it. You produce LEAN 4 code. You rewrite the imports and the theorem or example statement exactly as they were given at the beginning of your proof. You do NOT import anything new. You may use natural language to think through your method. If your code doesn't work you will be given all of the messages from the LEAN 4 compiler. You will rewrite the given lines to avoid those issues.", "gpt-4o")
+        if prompt in results:
+            continue
+        try:
+            result = persevere(prompt, chat=chat, server=lean_server, allowed_attempts=3)  # Replace with your actual logic
+            results[prompt] = result
+
+            with open(results_file, "w") as f:
+                json.dump(results, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception as e:
+            print(f"Error processing {prompt}: {e}")
