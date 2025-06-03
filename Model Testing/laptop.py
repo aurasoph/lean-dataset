@@ -27,7 +27,7 @@ async def compile_request(request: Request):
     res = await request.json()
     data = res["lean"]
     result = lean_server.run(Command(cmd=data))
-    if len(messages) == 1 and messages[0].data == "Goals accomplished!":
+    if len(result) == 1 and result[0].data == "Goals accomplished!":
         return {"message" : ""}
     return {"message" : lean_ai_tools.generate_reply(result.messages)}
 
