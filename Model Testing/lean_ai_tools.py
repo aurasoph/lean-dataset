@@ -154,9 +154,11 @@ def persevere(prompt, lean_init_str="", chat=Chat("You are a helpful chat assist
                 print("SUCCEEDED in " + str(i + 1) + " attempt(s).")
                 print("SUCCEEDED after " + str(time.time() - start) + " seconds.")
             return {"prompts" : prompts, "responses" : responses, "success" : 1}
+        prompts.append(reply)
         if print_progress:
             print(reply)
         response = clean_response(chat.get_response(reply))
+        responses.append(reply)
         if print_progress:
             print("=====ATTEMPT " + str(i + 2) + "=====")
             print(response)
@@ -194,7 +196,7 @@ if __name__ == "__main__":
         if prompt in results:
             continue
         try:
-            result = persevere(prompt, chat=chat, server=lean_server, allowed_attempts=3)  # Replace with your actual logic
+            result = persevere(prompt, chat=chat, server=lean_server, allowed_attempts=3)
             results[prompt] = result
 
             with open(results_file, "w") as f:
